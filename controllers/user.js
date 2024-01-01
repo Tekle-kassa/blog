@@ -4,7 +4,10 @@ const Comment = require("../models/comment");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const phoneNumberFormatter = require("../utils/phoneNumberFormatter");
-const protect = require("../middlewares/authUser");
+
+const generateToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+};
 const isValidPhoneNumber = (phoneNumber) => {
   const phoneRegex =
     /(^\+\s*2\s*5\s*1\s*(9|7)\s*(([0-9]\s*){8}\s*)$)|(^0\s*(9|7)\s*(([0-9]\s*){8})$)/;
@@ -13,17 +16,29 @@ const isValidPhoneNumber = (phoneNumber) => {
 module.exports.registerUser = async (req, res) => {
   try {
     const { username, phoneNumber, password } = req.body;
+    if (!isValidPhoneNumber(phoneNumber)) {
+      return res
+        .status(400)
+        .json({ message: "please provide a valid phone number" });
+    }
     const formatedPhoneNumber = phoneNumberFormatter(phoneNumber);
+
     if (!formatedPhoneNumber || !password || !username) {
       return res
         .status(400)
         .json({ message: "please fill all the required fields" });
     }
-    const userExists = await User.findOne({ phoneNumber: formatedPhoneNumber });
+    const userExists = await User.exists({ phoneNumber: formatedPhoneNumber });
     if (userExists) {
       return res
         .status(400)
         .json({ message: "phone number has already been used" });
+    }
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res
+        .status(400)
+        .json({ message: "user name has already been used" });
     }
     const user = new User({
       username,
@@ -32,9 +47,6 @@ module.exports.registerUser = async (req, res) => {
     });
     await user.save();
     const token = generateToken(user._id);
-    const generateToken = (id) => {
-      return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
-    };
     res.cookie("token", token, {
       path: "/",
       httpOnly: true,
@@ -106,6 +118,34 @@ module.exports.logoutUser = async (req, res, next) => {
     message: "successfully logged out",
   });
 };
+module.exports.posts = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    const totalPostsCount = await Post.countDocuments();
+    const totalPages = Math.ceil(totalPostsCount / limit);
+    const posts = await Post.find()
+      .populate("User", ["username"])
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+    if (!posts) {
+      return res.status(404).json({ message: "no posts found" });
+    }
+    res.status(200).json({
+      currentPage: page,
+      totalPages: totalPages,
+      totalPosts: totalPostsCount,
+      posts,
+    });
+  } catch (error) {
+    console.log(error);
+    res
+      .status(500)
+      .json({ message: "internal server error", error: error.message });
+  }
+};
 module.exports.createPost = async (req, res) => {
   try {
     const { text } = req.body;
@@ -126,6 +166,46 @@ module.exports.createPost = async (req, res) => {
       .json({ message: "internal server error", error: error.message });
   }
 };
+module.exports.getMyPosts = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    const totalPostsCount = await Post.countDocuments({ owner: req.user._id });
+    const totalPages = Math.ceil(totalPostsCount / limit);
+    const posts = await Post.find({ owner: req.user._id })
+      .skip(skip)
+      .limit(limit);
+    if (!posts) {
+      return res.status(404).json({ message: "no posts found" });
+    }
+    res.status(200).json({
+      currentPage: page,
+      totalPages: totalPages,
+      totalPosts: totalPostsCount,
+      posts,
+    });
+  } catch (error) {
+    console.log(error);
+    res
+      .status(500)
+      .json({ message: "internal server error", error: error.message });
+  }
+};
+module.exports.updatePost = async (req, res) => {
+  try {
+  } catch (error) {}
+};
+module.exports.getPost = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const post = await Post.findById(postId).populate("User", ["username"]);
+    if (!post) {
+      return res.status(404).json({ message: "the post is not found" });
+    }
+    res.status(200).json(post);
+  } catch (error) {}
+};
 module.exports.likePost = async (req, res) => {
   try {
     const { postId } = req.params;
@@ -134,8 +214,21 @@ module.exports.likePost = async (req, res) => {
       return res.status(404).json({ message: "post not found" });
     }
     const user = await User.findById(req.user._id);
-    post.likes.push(user._id);
-    user.likes.push(post._id);
+    if (user.likes.includes(post._id)) {
+      post.likes = post.likes.filter(
+        (like) => like.toString() !== user._id.toString()
+      );
+      user.likes = user.likes.filter(
+        (like) => like.toString() !== post._id.toString()
+      );
+    } else {
+      post.likes.push(user._id);
+      user.likes.push(post._id);
+    }
+
+    await post.save();
+    await user.save();
+    res.status(201).json({ message: "post liked", post });
   } catch (error) {
     console.log(error);
     res
@@ -153,6 +246,8 @@ module.exports.followUser = async (req, res) => {
     const user = await User.findById(req.user._id);
     user.follows.push(followedId);
     followedUser.followers.push(user._id);
+    await user.save();
+    await followedUser.save();
   } catch (error) {
     console.log(error);
     res
@@ -167,7 +262,7 @@ module.exports.addComment = async (req, res) => {
     if (!text) {
       return res.status(404).json({ message: "comment can not be empty" });
     }
-    const post = await Post.findById(postId);
+    const post = await Post.findById(postId).populate("comments");
     if (!post) {
       return res.status(404).json({ message: "post not found" });
     }
@@ -179,9 +274,11 @@ module.exports.addComment = async (req, res) => {
     });
     await comment.save();
     user.comments.push(comment._id);
+    post.comments.push(comment._id);
+    await post.save();
     await user.save();
-    const wholePost = post.populate("comments");
-    res.status(201).json({ post: wholePost });
+    const populatedPost = await Post.findById(postId).populate("comments");
+    res.status(201).json({ post: populatedPost });
   } catch (error) {
     res
       .status(500)
@@ -196,10 +293,21 @@ module.exports.likeComment = async (req, res) => {
       return res.status(404).json({ message: "comment not found" });
     }
     const user = await User.findById(req.user._id);
-    comment.likes.push(user._id);
-    user.likedComments.push(comment._id);
+    if (comment.likes.includes(user._id)) {
+      comment.likes = comment.likes.filter(
+        (like) => like.toString() !== user._id.toString()
+      );
+      user.likedComments = user.likedComments.filter(
+        (like) => like.toString() !== comment._id.toString()
+      );
+    } else {
+      comment.likes.push(user._id);
+      user.likedComments.push(comment._id);
+    }
+
     await comment.save();
     await user.save();
+    res.status(200).json({ comment });
   } catch (error) {
     res
       .status(500)
