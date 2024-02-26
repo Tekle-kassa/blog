@@ -126,7 +126,7 @@ module.exports.posts = async (req, res) => {
     const totalPostsCount = await Post.countDocuments();
     const totalPages = Math.ceil(totalPostsCount / limit);
     const posts = await Post.find()
-      .populate("User", ["username"])
+      .populate("owner", ["username"])
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -170,21 +170,38 @@ module.exports.getMyPosts = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
-    const totalPostsCount = await Post.countDocuments({ owner: req.user._id });
-    const totalPages = Math.ceil(totalPostsCount / limit);
+    const startIndex = (page - 1) * limit;
+    const count = await Post.countDocuments({ owner: req.user._id });
+    const totalPages = Math.ceil(count / limit);
     const posts = await Post.find({ owner: req.user._id })
-      .skip(skip)
+      .skip(startIndex)
       .limit(limit);
+
     if (!posts) {
       return res.status(404).json({ message: "no posts found" });
     }
     res.status(200).json({
-      currentPage: page,
-      totalPages: totalPages,
-      totalPosts: totalPostsCount,
+      page,
+      totalPages,
       posts,
     });
+    // const page = parseInt(req.query.page) || 1;
+    // const limit = parseInt(req.query.limit) || 10;
+    // const skip = (page - 1) * limit;
+    // const totalPostsCount = await Post.countDocuments({ owner: req.user._id });
+    // const totalPages = Math.ceil(totalPostsCount / limit);
+    // const posts = await Post.find({ owner: req.user._id })
+    //   .skip(skip)
+    //   .limit(limit);
+    // if (!posts) {
+    //   return res.status(404).json({ message: "no posts found" });
+    // }
+    // res.status(200).json({
+    //   currentPage: page,
+    //   totalPages: totalPages,
+    //   totalPosts: totalPostsCount,
+    //   posts,
+    // });
   } catch (error) {
     console.log(error);
     res
