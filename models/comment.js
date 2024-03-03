@@ -20,6 +20,14 @@ const commentSchema = new Schema({
       ref: "User",
     },
   ],
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now,
+  },
 });
 
 const Comment = mongoose.model("Comment", commentSchema);

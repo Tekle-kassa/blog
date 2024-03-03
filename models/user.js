@@ -31,13 +31,13 @@ const userSchema = new Schema({
   followers: [
     {
       type: Schema.Types.ObjectId,
-      ref: "User",
+      ref: "Following",
     },
   ],
   follows: [
     {
       type: Schema.Types.ObjectId,
-      ref: "User",
+      ref: "Following",
     },
   ],
   comments: [

@@ -4,6 +4,7 @@ const Comment = require("../models/comment");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const phoneNumberFormatter = require("../utils/phoneNumberFormatter");
+const Following = require("../models/follow");
 
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
@@ -118,6 +119,28 @@ module.exports.logoutUser = async (req, res, next) => {
     message: "successfully logged out",
   });
 };
+module.exports.searchPost = async (req, res) => {
+  try {
+    const { query } = req.query;
+    const regexQuery = new RegExp(query, "i");
+    const post = await Post.aggregate([
+      {
+        $match: {
+          $or: [
+            { username: { $regex: regexQuery } },
+            { category: { $regex: regexQuery } },
+          ],
+        },
+      },
+    ]);
+    res.status(200).json({ post });
+  } catch (error) {
+    console.log(error);
+    res
+      .status(500)
+      .json({ message: "Internal server error", error: error.message });
+  }
+};
 module.exports.posts = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -211,7 +234,30 @@ module.exports.getMyPosts = async (req, res) => {
 };
 module.exports.updatePost = async (req, res) => {
   try {
-  } catch (error) {}
+    const { postId } = req.params;
+    const { category, text } = req.body;
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ message: "post not found" });
+    }
+    if (!category && !text) {
+      return res.status(400).json({ message: "no changes performed" });
+    }
+    if (category) {
+      post.category = category;
+    }
+    if (text) {
+      post.text = text;
+    }
+    post.updatedAt = Date.now();
+    await post.save();
+    res.status(201).json({ message: "successfully updated your post", post });
+  } catch (error) {
+    console.log(error);
+    res
+      .status(500)
+      .json({ message: "internal server error", error: error.message });
+  }
 };
 module.exports.getPost = async (req, res) => {
   try {
@@ -253,6 +299,47 @@ module.exports.likePost = async (req, res) => {
       .json({ message: "internal server error", error: error.message });
   }
 };
+module.exports.myFollowers = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).populate({
+      path: "followers",
+      populate: {
+        path: "follower",
+        model: "User",
+        select: "username _id",
+      },
+    });
+    // console.log(user);
+    const followers = user.followers.map((follow) => follow.follower);
+    res.status(200).json(followers);
+  } catch (error) {
+    console.log(error);
+    res
+      .status(500)
+      .json({ message: "internal server error", error: error.message });
+  }
+};
+module.exports.myFollowings = async (req, res) => {
+  try {
+    const myFollowing = await Following.find({
+      follower: req.user._id,
+    }).populate({
+      path: "followed",
+      model: "User",
+      select: "username _id",
+    });
+    const followingList = myFollowing.map((follow) => ({
+      username: follow.followed.username,
+      id: follow.followed._id,
+    }));
+    res.status(200).json(followingList);
+  } catch (error) {
+    console.log(error);
+    res
+      .status(500)
+      .json({ message: "internal server error", error: error.message });
+  }
+};
 module.exports.followUser = async (req, res) => {
   try {
     const { followedId } = req.params;
@@ -260,16 +347,80 @@ module.exports.followUser = async (req, res) => {
     if (!followedUser) {
       return res.status(404).json({ message: "user not found" });
     }
-    const user = await User.findById(req.user._id);
-    user.follows.push(followedId);
-    followedUser.followers.push(user._id);
-    await user.save();
-    await followedUser.save();
+    const followerId = req.user._id;
+    const existingFollowing = await Following.findOne({
+      follower: followerId,
+      followed: followedId,
+    });
+    if (existingFollowing) {
+      return res.status(400).json({ message: "Already following this user" });
+    }
+    const newFollowing = new Following({
+      follower: followerId,
+      followed: followedId,
+    });
+    await newFollowing.save();
+    await User.findByIdAndUpdate(followerId, {
+      $push: { follows: newFollowing._id },
+    });
+    await User.findByIdAndUpdate(followedId, {
+      $push: { followers: newFollowing._id },
+    });
+    res.json({ message: "User followed successfully" });
   } catch (error) {
-    console.log(error);
+    console.error(error);
     res
       .status(500)
-      .json({ message: "internal server error", error: error.message });
+      .json({ message: "Internal server error", error: error.message });
+  }
+};
+// module.exports.followUser = async (req, res) => {
+//   try {
+//     const { followedId } = req.params;
+//     const followedUser = await User.findById(followedId);
+//     if (!followedUser) {
+//       return res.status(404).json({ message: "user not found" });
+//     }
+//     const user = await User.findById(req.user._id);
+//     user.follows.push(followedId);
+//     followedUser.followers.push(user._id);
+//     await user.save();
+//     await followedUser.save();
+//   } catch (error) {
+//     console.log(error);
+//     res
+//       .status(500)
+//       .json({ message: "internal server error", error: error.message });
+//   }
+// };
+module.exports.unfollowUser = async (req, res) => {
+  try {
+    const { followedId } = req.params;
+    const followerId = req.user._id;
+    const followedUser = await User.findById(followedId);
+    if (!followedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    const existingFollowing = await Following.findOne({
+      follower: followerId,
+      followed: followedId,
+    });
+    if (!existingFollowing) {
+      return res.status(400).json({ message: "Not following this user" });
+    }
+    await Following.findByIdAndDelete(existingFollowing._id);
+    await User.findByIdAndUpdate(followerId, {
+      $pull: { follows: existingFollowing._id },
+    });
+    await User.findByIdAndUpdate(followedId, {
+      $pull: { followers: existingFollowing._id },
+    });
+    res.status(200).json({ message: "User unfollowed successfully" });
+  } catch (error) {
+    console.error(error);
+    res
+      .status(500)
+      .json({ message: "Internal server error", error: error.message });
   }
 };
 module.exports.addComment = async (req, res) => {
